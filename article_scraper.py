@@ -107,8 +107,8 @@ class ArticleScraper:
             for elem in content.find_all(['p']):
                 text = elem.get_text(separator=' ')
                 text = ' '.join(text.split())
-                if text and len(text) > 50:
-                    skip_words = ['cookie', 'подписк', 'войти', 'регистр', 'пароль', 'copyright']
+                if text and len(text) > 30:
+                    skip_words = ['cookie', 'войти', 'регистр', 'пароль', 'copyright']
                     if not any(w in text.lower() for w in skip_words):
                         paragraphs.append(text)
 
@@ -118,60 +118,85 @@ class ArticleScraper:
             print('Ошибка: ' + str(e))
             return [], ''
 
-    def get_article_urls(self):
-        try:
-            response = self.session.get(self.base_url, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
+    def get_article_urls(self, max_pages=10):
+        urls = []
+        
+        # Собираем статьи с нескольких страниц
+        for page in range(1, max_pages + 1):
+            try:
+                if page == 1:
+                    page_url = self.base_url
+                else:
+                    page_url = self.base_url + '/page/' + str(page) + '/'
+                
+                print('Сканирую: ' + page_url)
+                response = self.session.get(page_url, timeout=10)
+                
+                if response.status_code != 200:
+                    print('Страница не найдена, останавливаюсь')
+                    break
+                    
+                soup = BeautifulSoup(response.text, 'html.parser')
 
-            urls = []
-            for link in soup.find_all('a', href=True):
-                href = link.get('href')
-                if not href:
-                    continue
-                if self.base_url in href or href.startswith('/'):
-                    if href.startswith('/'):
-                        href = self.base_url + href
-                    skip = ['wp-login', 'wp-admin', 'feed', 'category', 'tag', 'author', '#', '.jpg', '.png', '.pdf']
-                    if not any(s in href.lower() for s in skip):
-                        if href not in urls and href != self.base_url and href != self.base_url + '/':
-                            urls.append(href)
+                found_on_page = 0
+                for link in soup.find_all('a', href=True):
+                    href = link.get('href')
+                    if not href:
+                        continue
+                    if self.base_url in href or href.startswith('/'):
+                        if href.startswith('/'):
+                            href = self.base_url + href
+                        skip = ['wp-login', 'wp-admin', 'feed', 'category', 'tag', 'author', '#', '.jpg', '.png', '.pdf', '/page/']
+                        if not any(s in href.lower() for s in skip):
+                            if href not in urls and href != self.base_url and href != self.base_url + '/':
+                                urls.append(href)
+                                found_on_page += 1
+                
+                print('  Найдено ссылок: ' + str(found_on_page))
+                
+                if found_on_page == 0:
+                    break
+                    
+                time.sleep(1)
 
-            return urls[:20]
+            except Exception as e:
+                print('Ошибка: ' + str(e))
+                break
 
-        except Exception as e:
-            print('Ошибка: ' + str(e))
-            return []
+        print('Всего уникальных ссылок: ' + str(len(urls)))
+        return urls
 
     def save_to_word(self, paragraphs, title, filename):
         doc = Document()
         
-        # Добавляем заголовок
         if title:
             doc.add_heading(title, 0)
         
-        # Добавляем параграфы
         for para in paragraphs:
             doc.add_paragraph(para)
         
         doc.save(filename)
 
-    def scrape_articles(self, max_articles=10):
+    def scrape_articles(self, max_articles=90):
         if not os.path.exists('articles'):
             os.makedirs('articles')
 
-        urls = self.get_article_urls()
-        print('Найдено ссылок: ' + str(len(urls)))
+        # Рассчитываем сколько страниц нужно просканировать
+        pages_needed = (max_articles // 10) + 2
+        urls = self.get_article_urls(max_pages=pages_needed)
 
         saved = 0
-        for i, url in enumerate(urls[:max_articles], 1):
-            print('[' + str(i) + '] ' + url)
+        for i, url in enumerate(urls, 1):
+            if saved >= max_articles:
+                break
+                
+            print('[' + str(i) + '/' + str(len(urls)) + '] ' + url)
 
             paragraphs, title = self.get_article_text(url)
             
             if paragraphs and len(paragraphs) > 0:
                 saved += 1
                 
-                # Создаем безопасное имя файла
                 safe_title = title[:50] if title else 'article'
                 for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
                     safe_title = safe_title.replace(char, '')
@@ -183,11 +208,13 @@ class ArticleScraper:
                 self.save_to_word(paragraphs, title, filename)
                 print('    Сохранено: ' + filename)
             else:
-                print('    Текст не найден')
+                print('    Пропущено')
 
             time.sleep(1)
         
-        print('\nСохранено статей: ' + str(saved))
+        print('\n' + '=' * 40)
+        print('Сохранено статей: ' + str(saved))
+        print('=' * 40)
 
 
 if __name__ == '__main__':
@@ -203,8 +230,8 @@ if __name__ == '__main__':
     print('\nАвторизация...')
     if scraper.login():
         print('OK')
-        print('\nСкачивание статей...')
-        scraper.scrape_articles(max_articles=10)
+        print('\nПоиск статей...')
+        scraper.scrape_articles(max_articles=90)
         print('\nГотово!')
         print('Файлы в папке articles/')
     else:
