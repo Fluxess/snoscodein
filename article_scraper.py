@@ -1,7 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import requests
 from bs4 import BeautifulSoup
 import time
 import os
+
 
 class ArticleScraper:
     def __init__(self, username: str, password: str):
@@ -115,18 +119,18 @@ class ArticleScraper:
             time.sleep(1)
 
 
-def main():
+if __name__ == "__main__":
     USERNAME = 'Valeev'
     PASSWORD = 'iimes864'
     
+    print("Запуск скрапера...")
     scraper = ArticleScraper(USERNAME, PASSWORD)
     
+    print("Авторизация...")
     if scraper.login():
-        print("Авторизация успешна")
+        print("Авторизация успешна!")
+        print("Скачивание статей...")
         scraper.scrape_articles(max_articles=10)
+        print("Готово!")
     else:
         print("Ошибка авторизации")
-
-
-if __name__ == "__main__":
-    main()
