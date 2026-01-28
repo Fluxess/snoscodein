@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import os
+from docx import Document
 
 
 class ArticleScraper:
@@ -22,8 +23,7 @@ class ArticleScraper:
 
     def login(self):
         try:
-            print('Загрузка страницы входа...')
-            login_page = self.session.get(self.login_url, timeout=10)
+            self.session.get(self.login_url, timeout=10)
             
             login_data = {
                 'log': self.username,
@@ -57,21 +57,23 @@ class ArticleScraper:
         try:
             response = self.session.get(url, timeout=15)
             if response.status_code != 200:
-                return ''
-
-            # Сохраняем HTML первой статьи для анализа
-            if not os.path.exists('debug.html'):
-                with open('debug.html', 'w', encoding='utf-8') as f:
-                    f.write(response.text)
-                print('    HTML сохранен в debug.html')
+                return [], ''
 
             soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Получаем заголовок
+            title = ''
+            for sel in ['h1.entry-title', 'h1.post-title', 'h1', '.entry-title', '.post-title']:
+                elem = soup.select_one(sel)
+                if elem:
+                    title = elem.get_text(strip=True)
+                    break
 
             # Удаляем ненужные элементы
             for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'aside', 'form', 'iframe']):
                 tag.decompose()
 
-            # Пробуем разные селекторы
+            # Ищем контент
             content = None
             selectors = [
                 '.entry-content',
@@ -80,52 +82,41 @@ class ArticleScraper:
                 '.content',
                 '.single-content',
                 '.post-body',
-                '.article-body',
-                '.text',
-                '.post',
                 'article',
                 '.entry',
                 'main',
-                '#content',
-                '.page-content'
+                '#content'
             ]
             
             for selector in selectors:
                 content = soup.select_one(selector)
                 if content:
-                    # Проверяем что есть текст
                     text_check = content.get_text(strip=True)
                     if len(text_check) > 100:
-                        print('    Найден контент: ' + selector)
                         break
                     content = None
 
-            # Если не нашли по селекторам - берем body
             if not content:
                 content = soup.find('body')
-                if content:
-                    print('    Используем body')
 
             if not content:
-                return ''
+                return [], title
 
             # Извлекаем параграфы
             paragraphs = []
             for elem in content.find_all(['p']):
                 text = elem.get_text(separator=' ')
                 text = ' '.join(text.split())
-                # Фильтруем короткие и служебные тексты
                 if text and len(text) > 50:
-                    # Пропускаем меню, кнопки и т.д.
                     skip_words = ['cookie', 'подписк', 'войти', 'регистр', 'пароль', 'copyright']
                     if not any(w in text.lower() for w in skip_words):
                         paragraphs.append(text)
 
-            return '\n\n'.join(paragraphs)
+            return paragraphs, title
 
         except Exception as e:
             print('Ошибка: ' + str(e))
-            return ''
+            return [], ''
 
     def get_article_urls(self):
         try:
@@ -133,47 +124,66 @@ class ArticleScraper:
             soup = BeautifulSoup(response.text, 'html.parser')
 
             urls = []
-            # Ищем все ссылки на статьи
             for link in soup.find_all('a', href=True):
                 href = link.get('href')
                 if not href:
                     continue
-                # Фильтруем только статьи
                 if self.base_url in href or href.startswith('/'):
                     if href.startswith('/'):
                         href = self.base_url + href
-                    # Пропускаем служебные страницы
                     skip = ['wp-login', 'wp-admin', 'feed', 'category', 'tag', 'author', '#', '.jpg', '.png', '.pdf']
                     if not any(s in href.lower() for s in skip):
                         if href not in urls and href != self.base_url and href != self.base_url + '/':
                             urls.append(href)
 
-            print('Найдено ссылок: ' + str(len(urls)))
             return urls[:20]
 
         except Exception as e:
             print('Ошибка: ' + str(e))
             return []
 
+    def save_to_word(self, paragraphs, title, filename):
+        doc = Document()
+        
+        # Добавляем заголовок
+        if title:
+            doc.add_heading(title, 0)
+        
+        # Добавляем параграфы
+        for para in paragraphs:
+            doc.add_paragraph(para)
+        
+        doc.save(filename)
+
     def scrape_articles(self, max_articles=10):
         if not os.path.exists('articles'):
             os.makedirs('articles')
 
         urls = self.get_article_urls()
+        print('Найдено ссылок: ' + str(len(urls)))
 
         saved = 0
         for i, url in enumerate(urls[:max_articles], 1):
             print('[' + str(i) + '] ' + url)
 
-            text = self.get_article_text(url)
-            if text and len(text) > 200:
+            paragraphs, title = self.get_article_text(url)
+            
+            if paragraphs and len(paragraphs) > 0:
                 saved += 1
-                filename = 'articles/article_' + str(saved) + '.txt'
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(text)
-                print('    Сохранено: ' + filename + ' (' + str(len(text)) + ' символов)')
+                
+                # Создаем безопасное имя файла
+                safe_title = title[:50] if title else 'article'
+                for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
+                    safe_title = safe_title.replace(char, '')
+                safe_title = safe_title.strip()
+                if not safe_title:
+                    safe_title = 'article'
+                
+                filename = 'articles/' + str(saved).zfill(3) + '_' + safe_title + '.docx'
+                self.save_to_word(paragraphs, title, filename)
+                print('    Сохранено: ' + filename)
             else:
-                print('    Мало текста или не найден')
+                print('    Текст не найден')
 
             time.sleep(1)
         
@@ -196,6 +206,6 @@ if __name__ == '__main__':
         print('\nСкачивание статей...')
         scraper.scrape_articles(max_articles=10)
         print('\nГотово!')
-        print('Проверь папку articles/')
+        print('Файлы в папке articles/')
     else:
         print('Ошибка авторизации')
