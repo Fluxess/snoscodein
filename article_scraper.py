@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import os
+import re
 from docx import Document
 
 
@@ -17,8 +18,6 @@ class ArticleScraper:
         self.login_url = self.base_url + '/wp-login.php'
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
         })
 
     def login(self):
@@ -40,18 +39,20 @@ class ArticleScraper:
                 allow_redirects=True
             )
             
-            cookies = self.session.cookies.get_dict()
-            
-            if 'wordpress_logged_in' in str(cookies):
-                return True
-            if 'wp-login' not in response.url:
-                return True
-                
-            return True
+            return 'wp-login' not in response.url
 
         except Exception as e:
-            print('Ошибка сети: ' + str(e))
+            print('Ошибка: ' + str(e))
             return False
+
+    def is_article_url(self, url):
+        # Статьи обычно имеют формат /?p=123 или /год/месяц/название/
+        if '/?p=' in url:
+            return True
+        # Проверяем формат /2024/01/название/
+        if re.search(r'/\d{4}/\d{2}/', url):
+            return True
+        return False
 
     def get_article_text(self, url):
         try:
@@ -61,56 +62,42 @@ class ArticleScraper:
 
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Получаем заголовок
+            # Получаем заголовок статьи
             title = ''
-            for sel in ['h1.entry-title', 'h1.post-title', 'h1', '.entry-title', '.post-title']:
-                elem = soup.select_one(sel)
-                if elem:
-                    title = elem.get_text(strip=True)
-                    break
+            title_elem = soup.select_one('h1.entry-title') or soup.select_one('h1.post-title') or soup.select_one('article h1') or soup.select_one('h1')
+            if title_elem:
+                title = title_elem.get_text(strip=True)
 
-            # Удаляем ненужные элементы
-            for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'aside', 'form', 'iframe']):
-                tag.decompose()
-
-            # Ищем контент
-            content = None
-            selectors = [
-                '.entry-content',
-                '.post-content', 
-                '.article-content',
-                '.content',
-                '.single-content',
-                '.post-body',
-                'article',
-                '.entry',
-                'main',
-                '#content'
-            ]
+            # Ищем контент статьи
+            content = soup.select_one('.entry-content') or soup.select_one('.post-content') or soup.select_one('article .content')
             
-            for selector in selectors:
-                content = soup.select_one(selector)
-                if content:
-                    text_check = content.get_text(strip=True)
-                    if len(text_check) > 100:
-                        break
-                    content = None
-
-            if not content:
-                content = soup.find('body')
-
             if not content:
                 return [], title
 
-            # Извлекаем параграфы
+            # Удаляем лишние элементы внутри контента
+            for tag in content.find_all(['script', 'style', 'nav', 'aside', 'form', 'iframe', 'header', 'footer']):
+                tag.decompose()
+            
+            # Удаляем блоки с классами навигации, меню, виджетов
+            for tag in content.find_all(class_=re.compile(r'nav|menu|widget|sidebar|share|social|related|comment', re.I)):
+                tag.decompose()
+
+            # Извлекаем только параграфы с текстом статьи
             paragraphs = []
-            for elem in content.find_all(['p']):
+            for elem in content.find_all('p'):
                 text = elem.get_text(separator=' ')
                 text = ' '.join(text.split())
-                if text and len(text) > 30:
-                    skip_words = ['cookie', 'войти', 'регистр', 'пароль', 'copyright']
-                    if not any(w in text.lower() for w in skip_words):
-                        paragraphs.append(text)
+                
+                # Пропускаем короткие строки и служебный текст
+                if len(text) < 50:
+                    continue
+                    
+                # Пропускаем навигацию и служебные элементы
+                skip = ['cookie', 'подписк', 'войти', 'регистр', 'читайте также', 'поделиться', 'комментар', 'теги:', 'категор', 'опубликован', 'автор:']
+                if any(s in text.lower() for s in skip):
+                    continue
+                
+                paragraphs.append(text)
 
             return paragraphs, title
 
@@ -118,10 +105,9 @@ class ArticleScraper:
             print('Ошибка: ' + str(e))
             return [], ''
 
-    def get_article_urls(self, max_pages=10):
+    def get_article_urls(self, max_pages=15):
         urls = []
         
-        # Собираем статьи с нескольких страниц
         for page in range(1, max_pages + 1):
             try:
                 if page == 1:
@@ -129,41 +115,27 @@ class ArticleScraper:
                 else:
                     page_url = self.base_url + '/page/' + str(page) + '/'
                 
-                print('Сканирую: ' + page_url)
+                print('Страница ' + str(page) + '...')
                 response = self.session.get(page_url, timeout=10)
                 
                 if response.status_code != 200:
-                    print('Страница не найдена, останавливаюсь')
                     break
                     
                 soup = BeautifulSoup(response.text, 'html.parser')
 
-                found_on_page = 0
+                # Ищем ссылки только на статьи
                 for link in soup.find_all('a', href=True):
                     href = link.get('href')
-                    if not href:
-                        continue
-                    if self.base_url in href or href.startswith('/'):
-                        if href.startswith('/'):
-                            href = self.base_url + href
-                        skip = ['wp-login', 'wp-admin', 'feed', 'category', 'tag', 'author', '#', '.jpg', '.png', '.pdf', '/page/']
-                        if not any(s in href.lower() for s in skip):
-                            if href not in urls and href != self.base_url and href != self.base_url + '/':
-                                urls.append(href)
-                                found_on_page += 1
+                    if href and self.is_article_url(href):
+                        if href not in urls:
+                            urls.append(href)
                 
-                print('  Найдено ссылок: ' + str(found_on_page))
-                
-                if found_on_page == 0:
-                    break
-                    
-                time.sleep(1)
+                time.sleep(0.5)
 
-            except Exception as e:
-                print('Ошибка: ' + str(e))
+            except Exception:
                 break
 
-        print('Всего уникальных ссылок: ' + str(len(urls)))
+        print('Найдено статей: ' + str(len(urls)))
         return urls
 
     def save_to_word(self, paragraphs, title, filename):
@@ -177,43 +149,53 @@ class ArticleScraper:
         
         doc.save(filename)
 
+    def make_safe_filename(self, title):
+        # Убираем недопустимые символы
+        safe = title
+        for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*', '\n', '\r', '\t']:
+            safe = safe.replace(char, '')
+        safe = safe.strip()
+        # Ограничиваем длину
+        if len(safe) > 100:
+            safe = safe[:100]
+        return safe if safe else 'article'
+
     def scrape_articles(self, max_articles=90):
         if not os.path.exists('articles'):
             os.makedirs('articles')
 
-        # Рассчитываем сколько страниц нужно просканировать
-        pages_needed = (max_articles // 10) + 2
-        urls = self.get_article_urls(max_pages=pages_needed)
+        urls = self.get_article_urls(max_pages=15)
 
         saved = 0
         for i, url in enumerate(urls, 1):
             if saved >= max_articles:
                 break
                 
-            print('[' + str(i) + '/' + str(len(urls)) + '] ' + url)
+            print('[' + str(i) + '] ' + url)
 
             paragraphs, title = self.get_article_text(url)
             
-            if paragraphs and len(paragraphs) > 0:
+            # Сохраняем только если есть достаточно текста
+            if paragraphs and len(paragraphs) >= 2:
                 saved += 1
                 
-                safe_title = title[:50] if title else 'article'
-                for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
-                    safe_title = safe_title.replace(char, '')
-                safe_title = safe_title.strip()
-                if not safe_title:
-                    safe_title = 'article'
+                # Имя файла = заголовок статьи
+                safe_title = self.make_safe_filename(title)
+                filename = 'articles/' + safe_title + '.docx'
                 
-                filename = 'articles/' + str(saved).zfill(3) + '_' + safe_title + '.docx'
+                # Если файл уже есть, добавляем номер
+                if os.path.exists(filename):
+                    filename = 'articles/' + safe_title + '_' + str(saved) + '.docx'
+                
                 self.save_to_word(paragraphs, title, filename)
-                print('    Сохранено: ' + filename)
+                print('    OK: ' + title[:60])
             else:
-                print('    Пропущено')
+                print('    Пропущено (мало текста)')
 
             time.sleep(1)
         
         print('\n' + '=' * 40)
-        print('Сохранено статей: ' + str(saved))
+        print('Скачано статей: ' + str(saved))
         print('=' * 40)
 
 
@@ -221,18 +203,15 @@ if __name__ == '__main__':
     USERNAME = 'Valeev'
     PASSWORD = 'iimes864'
 
-    print('=' * 40)
-    print('IIMES Article Scraper')
+    print('IIMES Scraper')
     print('=' * 40)
     
     scraper = ArticleScraper(USERNAME, PASSWORD)
 
-    print('\nАвторизация...')
+    print('Авторизация...')
     if scraper.login():
-        print('OK')
-        print('\nПоиск статей...')
+        print('OK\n')
         scraper.scrape_articles(max_articles=90)
-        print('\nГотово!')
-        print('Файлы в папке articles/')
+        print('\nФайлы в папке articles/')
     else:
         print('Ошибка авторизации')
