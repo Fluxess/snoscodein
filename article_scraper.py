@@ -72,7 +72,10 @@ class ArticleScraper:
             # Извлекаем текст из параграфов
             paragraphs = []
             for elem in content.find_all(['p', 'h2', 'h3', 'h4']):
-                text = elem.get_text(strip=True)
+                # Получаем текст с сохранением пробелов между словами
+                text = elem.get_text(separator=' ')
+                # Убираем лишние пробелы и переносы строк
+                text = ' '.join(text.split())
                 if text and len(text) > 10:
                     paragraphs.append(text)
             
