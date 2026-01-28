@@ -15,33 +15,57 @@ class ArticleScraper:
         self.base_url = 'https://www.iimes.ru'
         self.login_url = self.base_url + '/wp-login.php'
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
         })
 
     def login(self):
         try:
-            self.session.get(self.base_url, timeout=10)
-
+            # Получаем страницу логина для cookies
+            print('Загрузка страницы входа...')
+            login_page = self.session.get(self.login_url, timeout=10)
+            print('Статус: ' + str(login_page.status_code))
+            
+            # Отправляем данные авторизации
             login_data = {
                 'log': self.username,
                 'pwd': self.password,
                 'wp-submit': 'Войти',
-                'redirect_to': self.base_url + '/',
+                'redirect_to': self.base_url,
                 'testcookie': '1'
             }
 
+            print('Отправка данных...')
             response = self.session.post(
                 self.login_url,
                 data=login_data,
-                headers={'Referer': self.base_url},
                 timeout=15,
                 allow_redirects=True
             )
-
-            return 'wp-login' not in response.url.lower()
+            
+            print('URL после входа: ' + response.url)
+            print('Статус: ' + str(response.status_code))
+            
+            # Проверяем cookies
+            cookies = self.session.cookies.get_dict()
+            print('Cookies: ' + str(list(cookies.keys())))
+            
+            # Проверка успешности
+            if 'wordpress_logged_in' in str(cookies):
+                return True
+            if 'wp-login' not in response.url:
+                return True
+            
+            # Проверяем текст страницы на ошибки
+            if 'Неверн' in response.text or 'ошибка' in response.text.lower():
+                print('Сайт вернул ошибку авторизации')
+                return False
+                
+            return True
 
         except Exception as e:
-            print('Ошибка авторизации:', e)
+            print('Ошибка сети: ' + str(e))
             return False
 
     def get_article_text(self, url):
@@ -74,7 +98,7 @@ class ArticleScraper:
             return '\n\n'.join(paragraphs)
 
         except Exception as e:
-            print('Ошибка:', e)
+            print('Ошибка: ' + str(e))
             return ''
 
     def get_article_urls(self):
@@ -83,7 +107,7 @@ class ArticleScraper:
             soup = BeautifulSoup(response.text, 'html.parser')
 
             urls = []
-            for link in soup.select('article a, .post a, h2 a, h3 a'):
+            for link in soup.select('article a, .post a, h2 a, h3 a, .entry-title a'):
                 href = link.get('href')
                 if href and self.base_url in href and href not in urls:
                     urls.append(href)
@@ -98,6 +122,7 @@ class ArticleScraper:
             os.makedirs('articles')
 
         urls = self.get_article_urls()
+        print('Найдено статей: ' + str(len(urls)))
 
         for i, url in enumerate(urls[:max_articles], 1):
             print('[' + str(i) + '] ' + url)
@@ -108,6 +133,8 @@ class ArticleScraper:
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(text)
                 print('    Сохранено: ' + filename)
+            else:
+                print('    Текст не найден')
 
             time.sleep(1)
 
@@ -116,14 +143,18 @@ if __name__ == '__main__':
     USERNAME = 'Valeev'
     PASSWORD = 'iimes864'
 
-    print('Запуск скрапера...')
+    print('=' * 40)
+    print('IIMES Article Scraper')
+    print('=' * 40)
+    
     scraper = ArticleScraper(USERNAME, PASSWORD)
 
-    print('Авторизация...')
+    print('\nАвторизация...')
     if scraper.login():
-        print('Авторизация успешна!')
-        print('Скачивание статей...')
+        print('\nАвторизация успешна!')
+        print('\nСкачивание статей...')
         scraper.scrape_articles(max_articles=10)
-        print('Готово!')
+        print('\nГотово!')
     else:
-        print('Ошибка авторизации')
+        print('\nОшибка авторизации')
+        print('Проверьте логин и пароль')
